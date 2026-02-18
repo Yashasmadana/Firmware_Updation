@@ -4,9 +4,8 @@ export default function UploadPage() {
   const fileInputRef = useRef(null);
 
   const [selectedFile, setSelectedFile] = useState(null);
-  const [deviceConnected, setDeviceConnected] = useState(false);
-  const [deviceInfo, setDeviceInfo] = useState(null);
-  const [showPopup, setShowPopup] = useState(false);
+  const [flashStatus, setFlashStatus] = useState("");
+  const [portName] = useState("COM11"); // Change if needed
 
   /* Open file manager */
   const openFileManager = () => {
@@ -22,62 +21,38 @@ export default function UploadPage() {
     }
   };
 
-  /* Connect MCU via Web Serial */
-  const connectDevice = async () => {
-  try {
-    if (!("serial" in navigator)) {
-      alert("Web Serial not supported. Use Chrome or Edge.");
+  /* 🔥 Flash Firmware */
+  const handleFlash = async () => {
+    if (!selectedFile) {
+      alert("Please select a firmware file");
       return;
     }
 
-    const port = await navigator.serial.requestPort();
-    await port.open({ baudRate: 115200 });
+    try {
+      setFlashStatus("Flashing in progress...");
 
-    const info = port.getInfo();
+      const formData = new FormData();
+      formData.append("file", selectedFile);
+      formData.append("port", portName);
 
-    let mcuVersion = "Unknown";
+      const response = await fetch("http://localhost:5000/flash", {
+        method: "POST",
+        body: formData,
+      });
 
-    // 🔍 Try reading version (non-blocking)
-    if (port.readable) {
-      const reader = port.readable.getReader();
-      const decoder = new TextDecoder();
+      const data = await response.json();
+      console.log("Backend response:", data);
 
-      const timeout = new Promise((resolve) =>
-        setTimeout(() => resolve(null), 1000)
-      );
-
-      const readData = reader.read();
-
-      const result = await Promise.race([readData, timeout]);
-
-      if (result && result.value) {
-        const text = decoder.decode(result.value);
-        const match = text.match(/version[:\s]+([^\s]+)/i);
-        if (match) {
-          mcuVersion = match[1];
-        }
+      if (data.status === "success") {
+        setFlashStatus("✅ Flash Successful");
+      } else {
+        setFlashStatus("❌ Flash Failed");
       }
-
-      reader.releaseLock();
+    } catch (error) {
+      console.error("Flash error:", error);
+      setFlashStatus("❌ Backend connection error");
     }
-
-    setDeviceConnected(true);
-    setDeviceInfo({
-      name: "USB Serial Device",
-      vendorId: info.usbVendorId || "Unknown",
-      productId: info.usbProductId || "Unknown",
-      version: mcuVersion,
-    });
-
-    setShowPopup(true);
-  } catch (err) {
-    if (err?.message?.includes("The user cancelled")) return;
-    if (deviceConnected) return;
-
-    console.error(err);
-    alert("Failed to connect device");
-  }
-};
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-black via-slate-900 to-slate-800 text-white p-6">
@@ -88,46 +63,14 @@ export default function UploadPage() {
           Firmware Management Portal
         </h1>
         <p className="text-gray-400 mt-2">
-          Upload, configure, and manage embedded device firmware
+          Upload and flash embedded device firmware
         </p>
       </header>
-
-      {/* Device Status */}
-      <div className="bg-slate-900/80 border border-slate-700 rounded-xl p-6 flex items-center justify-between mb-10">
-        <div className="flex items-center gap-3">
-          <span className="text-sky-400 text-xl">📡</span>
-          <div>
-            <p className="font-semibold">Device Status</p>
-            <p className="text-sm">
-              {deviceConnected ? (
-                <span className="text-green-400">Device Connected</span>
-              ) : (
-                <span className="text-gray-400">No device connected</span>
-              )}
-            </p>
-          </div>
-        </div>
-
-        <button
-          onClick={connectDevice}
-          disabled={deviceConnected}
-          className={`px-6 py-2 rounded-lg font-semibold transition
-            ${
-              deviceConnected
-                ? "bg-gray-700 cursor-not-allowed"
-                : "bg-sky-500 hover:bg-sky-600"
-            }
-          `}
-        >
-          {deviceConnected ? "Device Connected" : "Connect Device"}
-        </button>
-      </div>
 
       {/* Upload Firmware */}
       <div className="bg-slate-900/80 border border-slate-700 rounded-2xl p-8">
         <h2 className="text-2xl font-bold mb-6">Upload Firmware</h2>
 
-        {/* Upload Area */}
         <div
           onClick={openFileManager}
           className="cursor-pointer border-2 border-dashed border-slate-600 rounded-xl p-10 text-center hover:border-sky-500 transition"
@@ -147,7 +90,6 @@ export default function UploadPage() {
           )}
         </div>
 
-        {/* Hidden File Input */}
         <input
           ref={fileInputRef}
           type="file"
@@ -156,12 +98,12 @@ export default function UploadPage() {
           onChange={handleFileChange}
         />
 
-        {/* Flash Button (Demo Only) */}
         <button
-          disabled={!selectedFile || !deviceConnected}
+          onClick={handleFlash}
+          disabled={!selectedFile}
           className={`w-full mt-8 py-4 text-lg font-bold rounded-xl transition
             ${
-              selectedFile && deviceConnected
+              selectedFile
                 ? "bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-600 hover:to-blue-700"
                 : "bg-gray-700 cursor-not-allowed"
             }
@@ -169,35 +111,11 @@ export default function UploadPage() {
         >
           Flash Firmware
         </button>
+
+        {flashStatus && (
+          <p className="mt-6 text-center font-semibold">{flashStatus}</p>
+        )}
       </div>
-
-      {/* Device Info Popup */}
-      {showPopup && deviceInfo && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center">
-          <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 w-80 text-center">
-            <h3 className="text-xl font-bold text-sky-400 mb-4">
-              Device Connected
-            </h3>
-            <p className="text-gray-300">{deviceInfo.name}</p>
-            <p className="text-gray-400 text-sm">
-              Vendor ID: {deviceInfo.vendorId}
-            </p>
-            <p className="text-gray-400 text-sm">
-              Product ID: {deviceInfo.productId}
-            </p>
-            <p className="text-gray-400 text-sm">
-              Version: {deviceInfo.version}
-            </p>
-
-            <button
-              onClick={() => setShowPopup(false)}
-              className="mt-6 px-6 py-2 bg-sky-500 hover:bg-sky-600 rounded-lg font-semibold"
-            >
-              OK
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
