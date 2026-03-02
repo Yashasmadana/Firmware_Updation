@@ -143,17 +143,6 @@ export default function UploadPage() {
           onChange={handleFileChange}
         />
 
-        {firmwareDetails && (
-          <div className="mt-6 bg-slate-800 p-4 rounded border border-slate-600">
-            <h3 className="text-lg text-sky-400 font-semibold">
-              Detected Firmware Details
-            </h3>
-            <p>Version: {firmwareDetails.version}</p>
-            <p>Board: {firmwareDetails.board}</p>
-            <p>Build Date: {firmwareDetails.build_date}</p>
-          </div>
-        )}
-
         <button
           onClick={handleFlash}
           disabled={!firmwareDetails || isUploading}

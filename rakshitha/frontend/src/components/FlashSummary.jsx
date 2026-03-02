@@ -59,6 +59,22 @@ export default function FlashSummary() {
             </span>
           </div>
 
+          {/* NEW: Board */}
+          <div className="bg-slate-800 p-4 rounded-lg flex justify-between">
+            <span className="text-slate-400">Board</span>
+            <span className="font-semibold">
+              {summary.board}
+            </span>
+          </div>
+
+          {/* NEW: Port */}
+          <div className="bg-slate-800 p-4 rounded-lg flex justify-between">
+            <span className="text-slate-400">Port</span>
+            <span className="font-semibold">
+              {summary.port}
+            </span>
+          </div>
+
           <div className="bg-slate-800 p-4 rounded-lg flex justify-between">
             <span className="text-slate-400">Date</span>
             <span className="font-semibold">

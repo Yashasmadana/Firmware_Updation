@@ -5,65 +5,111 @@ from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import serial.tools.list_ports
+import sqlite3
+
+# ==========================
+# DATABASE SETUP
+# ==========================
+
+DATABASE = "flash_history.db"
+
+def init_db():
+    conn = sqlite3.connect(DATABASE)
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS flash_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            version TEXT,
+            device TEXT,
+            board TEXT,
+            port TEXT,
+            date TEXT,
+            time TEXT,
+            result TEXT
+        )
+    """)
+
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# ==========================
+# FLASK SETUP
+# ==========================
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
+CORS(app)
 
 UPLOAD_FOLDER = r"C:\temp\uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Avrdude paths
 AVRDUDE_PATH = r"C:\Users\Gopal\AppData\Local\Arduino15\packages\arduino\tools\avrdude\8.0.0-arduino1\bin\avrdude.exe"
 CONF_PATH = r"C:\Users\Gopal\AppData\Local\Arduino15\packages\arduino\tools\avrdude\8.0.0-arduino1\etc\avrdude.conf"
 
+# ==========================
+# HASH GENERATION (VERSION)
+# ==========================
 
-# --------------------------
-# HASH GENERATION
-# --------------------------
 def compute_firmware_hash(fp):
     sha = hashlib.sha256()
     with open(fp, "rb") as f:
         sha.update(f.read())
     return sha.hexdigest()[:12]
 
+# ==========================
+# DETECT BOARD FROM HEX FILE
+# ==========================
 
-# --------------------------
-# DETECT BOARD FROM HEX
-# --------------------------
-def detect_board(fp):
+def detect_board_from_hex(fp):
     try:
         content = open(fp, "r").read().upper()
         if "1E95" in content:
-            return "ATmega328P (Arduino UNO/Nano)"
+            return "atmega328p"
         if "1E98" in content:
-            return "ATmega2560 (Arduino Mega)"
-        return "AVR (Unknown HEX MCU)"
+            return "atmega2560"
+        return "avr-unknown"
     except:
-        return "Unknown"
-    
+        return "unknown"
 
-# --------------------------
-# DETECT ARDUINO USB PORT
-# --------------------------
+# ==========================
+# DETECT CONNECTED DEVICE
+# ==========================
+
 def detect_arduino_board():
     for p in serial.tools.list_ports.comports():
-        d = p.description.lower()
-        if "arduino" in d or "usb serial" in d or "ch340" in d:
-            return "atmega328p", p.device
-    return None, None
+        desc = p.description.lower()
 
+        if "arduino uno" in desc:
+            return "atmega328p", p.device, "Arduino Uno"
 
-# --------------------------
-# BACKEND TEST ROUTE
-# --------------------------
+        if "arduino nano" in desc:
+            return "atmega328p", p.device, "Arduino Nano"
+
+        if "arduino mega" in desc:
+            return "atmega2560", p.device, "Arduino Mega"
+
+        if "ch340" in desc:
+            return "atmega328p", p.device, "CH340 USB Device"
+
+        if "usb serial" in desc:
+            return "atmega328p", p.device, p.description
+
+    return None, None, None
+
+# ==========================
+# HOME ROUTE
+# ==========================
+
 @app.route("/")
 def home():
     return "Backend Running"
 
+# ==========================
+# FIRMWARE INFO (AUTO VERSION DETECTION)
+# ==========================
 
-# --------------------------
-# FIRMWARE INFO
-# --------------------------
 @app.route("/firmware-info", methods=["POST"])
 def firmware_info():
 
@@ -76,37 +122,44 @@ def firmware_info():
 
     info = {
         "version": compute_firmware_hash(fp),
-        "board": detect_board(fp),
-        "build_date": datetime.now().strftime("%Y-%m-%d")
+        "board": detect_board_from_hex(fp),
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "time": datetime.now().strftime("%H:%M:%S")
     }
 
     return jsonify({"status": "success", "details": info})
 
-
-# --------------------------
+# ==========================
 # FLASH FIRMWARE
-# --------------------------
+# ==========================
+
 @app.route("/flash", methods=["POST"])
 def flash():
+
     if "firmware" not in request.files:
         return jsonify({"status": "error", "message": "Firmware not provided"}), 400
 
     firmware = request.files["firmware"]
 
-    # Make filename unique (VERY IMPORTANT)
     filename = f"{datetime.now().timestamp()}_{firmware.filename}"
     fp = os.path.join(UPLOAD_FOLDER, filename)
     firmware.save(fp)
 
-    board, port = detect_arduino_board()
+    # Detect connected board
+    board, port, device_name = detect_arduino_board()
+
     if not port:
         return jsonify({"status": "error", "message": "Arduino not detected"}), 400
 
+    # Flash command
     cmd = [
         AVRDUDE_PATH, "-C", CONF_PATH, "-v",
-        "-p", board, "-c", "arduino",
-        "-P", port, "-b", "115200",
-        "-D", "-U", f"flash:w:{fp}:i"
+        "-p", board,
+        "-c", "arduino",
+        "-P", port,
+        "-b", "115200",
+        "-D",
+        "-U", f"flash:w:{fp}:i"
     ]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -118,19 +171,52 @@ def flash():
             "details": result.stderr
         }), 500
 
-    # 🔥 FIXED SUMMARY FORMAT
+    # ==========================
+    # FLASH SUMMARY DISPLAY DATA
+    # ==========================
+
     summary = {
         "version": compute_firmware_hash(fp),
-        "device": port,
+        "device": device_name,
+        "board": board,
+        "port": port,
         "date": datetime.now().strftime("%Y-%m-%d"),
         "time": datetime.now().strftime("%H:%M:%S"),
         "result": "Successful"
     }
 
+    # ==========================
+    # SAVE TO DATABASE
+    # ==========================
+
+    conn = sqlite3.connect(DATABASE)
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        INSERT INTO flash_logs 
+        (version, device, board, port, date, time, result)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        summary["version"],
+        summary["device"],
+        summary["board"],
+        summary["port"],
+        summary["date"],
+        summary["time"],
+        summary["result"]
+    ))
+
+    conn.commit()
+    conn.close()
+
     return jsonify({
         "status": "success",
         "flash_summary": summary
     })
+
+# ==========================
+# MAIN
+# ==========================
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
