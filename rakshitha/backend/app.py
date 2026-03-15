@@ -45,8 +45,8 @@ CORS(app)
 UPLOAD_FOLDER = r"C:\temp\uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-AVRDUDE_PATH = r"C:\Users\Gopal\AppData\Local\Arduino15\packages\arduino\tools\avrdude\8.0.0-arduino1\bin\avrdude.exe"
-CONF_PATH = r"C:\Users\Gopal\AppData\Local\Arduino15\packages\arduino\tools\avrdude\8.0.0-arduino1\etc\avrdude.conf"
+# PlatformIO project folder
+PIO_PROJECT = os.path.join(os.getcwd(), "platformio_project")
 
 # ==========================
 # HASH GENERATION (VERSION)
@@ -65,39 +65,46 @@ def compute_firmware_hash(fp):
 def detect_board_from_hex(fp):
     try:
         content = open(fp, "r").read().upper()
+
         if "1E95" in content:
             return "atmega328p"
+
         if "1E98" in content:
             return "atmega2560"
-        return "avr-unknown"
+
+        return "unknown"
+
     except:
         return "unknown"
 
 # ==========================
-# DETECT CONNECTED DEVICE
+# UNIVERSAL DEVICE DETECTION
 # ==========================
 
-def detect_arduino_board():
-    for p in serial.tools.list_ports.comports():
-        desc = p.description.lower()
+def detect_board():
 
-        if "arduino uno" in desc:
-            return "atmega328p", p.device, "Arduino Uno"
+    ports = serial.tools.list_ports.comports()
 
-        if "arduino nano" in desc:
-            return "atmega328p", p.device, "Arduino Nano"
+    for p in ports:
+        hwid = p.hwid.lower()
 
-        if "arduino mega" in desc:
-            return "atmega2560", p.device, "Arduino Mega"
+        # Arduino Uno
+        if "2341:0043" in hwid:
+            return ("uno", p.device, "Arduino Uno", "atmelavr", "arduino")
 
-        if "ch340" in desc:
-            return "atmega328p", p.device, "CH340 USB Device"
+        # Arduino Mega
+        if "2341:0010" in hwid:
+            return ("megaatmega2560", p.device, "Arduino Mega", "atmelavr", "arduino")
 
-        if "usb serial" in desc:
-            return "atmega328p", p.device, p.description
+        # ESP32 (CP210x)
+        if "10c4:ea60" in hwid:
+            return ("esp32dev", p.device, "ESP32", "espressif32", "arduino")
 
-    return None, None, None
+        # STM32 ST-Link
+        if "0483:374b" in hwid:
+            return ("nucleo_f401re", p.device, "STM32 Nucleo", "ststm32", "mbed")
 
+    return None, None, None, None, None
 # ==========================
 # HOME ROUTE
 # ==========================
@@ -107,14 +114,17 @@ def home():
     return "Backend Running"
 
 # ==========================
-# FIRMWARE INFO (AUTO VERSION DETECTION)
+# FIRMWARE INFO
 # ==========================
 
 @app.route("/firmware-info", methods=["POST"])
 def firmware_info():
 
     if "file" not in request.files:
-        return jsonify({"status": "error", "message": "No file uploaded"}), 400
+        return jsonify({
+            "status": "error",
+            "message": "No file uploaded"
+        }), 400
 
     file = request.files["file"]
     fp = os.path.join(UPLOAD_FOLDER, file.filename)
@@ -127,7 +137,54 @@ def firmware_info():
         "time": datetime.now().strftime("%H:%M:%S")
     }
 
-    return jsonify({"status": "success", "details": info})
+    return jsonify({
+        "status": "success",
+        "details": info
+    })
+
+# ==========================
+# FLASH USING PLATFORMIO
+# ==========================
+
+def flash_with_platformio(board, port, platform, framework, firmware):
+
+    os.makedirs(PIO_PROJECT, exist_ok=True)
+
+    ini_path = os.path.join(PIO_PROJECT, "platformio.ini")
+
+    with open(ini_path, "w") as f:
+        f.write(f"""
+[env:upload]
+platform = {platform}
+board = {board}
+framework = {framework}
+upload_port = {port}
+""")
+
+    # create dummy source so PlatformIO can compile
+    src_dir = os.path.join(PIO_PROJECT, "src")
+    os.makedirs(src_dir, exist_ok=True)
+
+    dummy_file = os.path.join(src_dir, "main.cpp")
+
+    with open(dummy_file, "w") as f:
+        f.write("""
+#include <Arduino.h>
+
+void setup() {}
+
+void loop() {}
+""")
+
+    cmd = [
+        "pio",
+        "run",
+        "-e", "upload",
+        "--target", "upload",
+        "--project-dir", PIO_PROJECT
+    ]
+
+    return subprocess.run(cmd, capture_output=True, text=True)
 
 # ==========================
 # FLASH FIRMWARE
@@ -137,7 +194,10 @@ def firmware_info():
 def flash():
 
     if "firmware" not in request.files:
-        return jsonify({"status": "error", "message": "Firmware not provided"}), 400
+        return jsonify({
+            "status": "error",
+            "message": "Firmware not provided"
+        }), 400
 
     firmware = request.files["firmware"]
 
@@ -145,24 +205,15 @@ def flash():
     fp = os.path.join(UPLOAD_FOLDER, filename)
     firmware.save(fp)
 
-    # Detect connected board
-    board, port, device_name = detect_arduino_board()
+    board, port, device_name, platform, framework = detect_board()
 
     if not port:
-        return jsonify({"status": "error", "message": "Arduino not detected"}), 400
+        return jsonify({
+            "status": "error",
+            "message": "Device not detected"
+        }), 400
 
-    # Flash command
-    cmd = [
-        AVRDUDE_PATH, "-C", CONF_PATH, "-v",
-        "-p", board,
-        "-c", "arduino",
-        "-P", port,
-        "-b", "115200",
-        "-D",
-        "-U", f"flash:w:{fp}:i"
-    ]
-
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = flash_with_platformio(board, port, platform, framework, fp)
 
     if result.returncode != 0:
         return jsonify({
@@ -170,10 +221,6 @@ def flash():
             "message": "Flash failed",
             "details": result.stderr
         }), 500
-
-    # ==========================
-    # FLASH SUMMARY DISPLAY DATA
-    # ==========================
 
     summary = {
         "version": compute_firmware_hash(fp),
@@ -185,15 +232,11 @@ def flash():
         "result": "Successful"
     }
 
-    # ==========================
-    # SAVE TO DATABASE
-    # ==========================
-
     conn = sqlite3.connect(DATABASE)
     cursor = conn.cursor()
 
     cursor.execute("""
-        INSERT INTO flash_logs 
+        INSERT INTO flash_logs
         (version, device, board, port, date, time, result)
         VALUES (?, ?, ?, ?, ?, ?, ?)
     """, (
@@ -219,4 +262,4 @@ def flash():
 # ==========================
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=False)
