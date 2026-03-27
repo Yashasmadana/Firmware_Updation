@@ -152,6 +152,9 @@ def flash_with_platformio(board, port, platform, framework, firmware):
 
     ini_path = os.path.join(PIO_PROJECT, "platformio.ini")
 
+    # ==========================
+    # MODIFY HERE: add upload_flags
+    # ==========================
     with open(ini_path, "w") as f:
         f.write(f"""
 [env:upload]
@@ -159,9 +162,12 @@ platform = {platform}
 board = {board}
 framework = {framework}
 upload_port = {port}
+
+upload_flags =
+    -Uflash:w:{firmware}:i
 """)
 
-    # create dummy source so PlatformIO can compile
+    # create dummy source (still required by PlatformIO)
     src_dir = os.path.join(PIO_PROJECT, "src")
     os.makedirs(src_dir, exist_ok=True)
 
@@ -185,7 +191,6 @@ void loop() {}
     ]
 
     return subprocess.run(cmd, capture_output=True, text=True)
-
 # ==========================
 # FLASH FIRMWARE
 # ==========================
